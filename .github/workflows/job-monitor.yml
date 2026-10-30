@@ -1,70 +1,51 @@
-name: Job Monitoring
+name: Synapse Daily Monitor
 
 on:
+  schedule:
+    # 2:30 PM IST, Monday-Friday = 09:00 UTC, Monday-Friday
+    - cron: '0 9 * * 1-5'
   workflow_dispatch:
 
-  schedule:
-    # Every Monday at 12:00 AM IST
-    # 12:00 AM IST Monday = 18:30 UTC Sunday
-    - cron: '30 18 * * 0'
+permissions:
+  contents: read
 
 jobs:
   monitor:
-
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      SYNAPSE_ENDPOINT: ${{ secrets.SYNAPSE_ENDPOINT }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
 
     steps:
-
-      # ======================================================
-      # Checkout repository
-      # ======================================================
-
-      - name: Checkout repository
+      - name: Check out repository
         uses: actions/checkout@v4
-
-
-      # ======================================================
-      # Setup Python
-      # ======================================================
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
-
-      # ======================================================
-      # Install dependencies
-      # ======================================================
+          python-version: '3.12'
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: python -m pip install --upgrade pip azure-identity requests
 
-
-      # ======================================================
-      # Run Job Monitoring
-      # ======================================================
-
-      - name: Run Synapse Job Monitoring
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          SYNAPSE_ENDPOINT: ${{ secrets.SYNAPSE_ENDPOINT }}
-
-        run: |
-          python synapse_Daily_Monitor.py
-
-
-      # ======================================================
-      # Upload CSV report
-      # ======================================================
+      - name: Run Synapse monitoring and email notifications
+        run: python synapse_unattended_monitor.py
 
       - name: Upload CSV report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: synapse-pipeline-results
-          path: synapse_pipeline_results.csv
-          retention-days: 30
+          name: synapse-pipeline-report-${{ github.run_id }}
+          path: '*.csv'
+          if-no-files-found: ignore
+          retention-days: 14
