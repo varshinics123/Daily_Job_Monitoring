@@ -2,6 +2,9 @@
 import os
 import csv
 import requests
+import smtplib
+from email.message import EmailMessage
+from pathlib import Path
 
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -21,7 +24,9 @@ API_VERSION = "2020-12-01"
 SYNAPSE_SCOPE = "https://dev.azuresynapse.net/.default"
 LOCAL_TZ = ZoneInfo("Asia/Kolkata")
 
-CSV_FILE = "synapse_pipeline_results.csv"
+# In GitHub Actions, GITHUB_REPOSITORY is "owner/repository".
+REPOSITORY_NAME = os.getenv("REPOSITORY_NAME") or os.getenv("GITHUB_REPOSITORY", "Daily_Job_Monitoring").split("/")[-1]
+CSV_FILE = ""  # Set dynamically in main() using a UTC timestamp.
 
 MONITORED_PIPELINES = [
     "PL_Captura_Snapshots",
@@ -364,11 +369,96 @@ def create_csv(rows):
     print(f"CSV generated: {CSV_FILE}")
 
 
+
+# ============================================================
+# EMAIL NOTIFICATIONS
+# ============================================================
+
+def send_email(subject, body, attachment_path=None):
+    """Send an email using SMTP settings supplied through environment variables.
+
+    Required variables: SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD,
+    EMAIL_FROM, EMAIL_TO. EMAIL_TO may contain comma-separated addresses.
+    """
+    required = ["SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "EMAIL_FROM", "EMAIL_TO"]
+    missing = [name for name in required if not os.getenv(name)]
+    if missing:
+        print("Email not sent; missing configuration: " + ", ".join(missing))
+        return False
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = os.environ["EMAIL_FROM"]
+    recipients = [address.strip() for address in os.environ["EMAIL_TO"].split(",") if address.strip()]
+    message["To"] = ", ".join(recipients)
+    message.set_content(body)
+
+    if attachment_path and Path(attachment_path).is_file():
+        with open(attachment_path, "rb") as file:
+            message.add_attachment(
+                file.read(), maintype="text", subtype="csv", filename=Path(attachment_path).name
+            )
+
+    host = os.environ["SMTP_HOST"]
+    port = int(os.environ["SMTP_PORT"])
+    with smtplib.SMTP_SSL(host, port, timeout=30) as smtp:
+        smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+        smtp.send_message(message)
+
+    print(f"Email sent: {subject}")
+    return True
+
+
+def notify_results(rows, csv_path):
+    """Send the scheduled report and a failure alert if any runs failed."""
+    repo = REPOSITORY_NAME
+    run_time_utc = datetime.now(timezone.utc).strftime("%d-%m-%YT%H-%M-%SZ")
+    failed_rows = [row for row in rows if str(row.get("Status", "")).lower() in {"failed", "failure"}]
+
+    summary = [
+        f"Repository: {repo}",
+        f"Report generated (UTC): {run_time_utc}",
+        f"Pipeline runs included: {len(rows)}",
+        f"Failed runs included: {len(failed_rows)}",
+        "",
+    ]
+    if failed_rows:
+        summary.append("Failed pipeline runs:")
+        for row in failed_rows:
+            summary.append(
+                f"- {row.get('Pipeline name')} | Run ID: {row.get('Run ID')} | "
+                f"Status: {row.get('Status')} | Error: {row.get('Error / Message')}"
+            )
+    else:
+        summary.append("No failed pipeline runs were found in this report window.")
+
+    # Scheduled report email with CSV attachment.
+    send_email(
+        subject=f"{repo} Synapse Pipeline Report - {run_time_utc}",
+        body="\n".join(summary),
+        attachment_path=csv_path,
+    )
+
+    # Separate failure-triggered alert. This checks failures found in the last-24-hour report;
+    # repeated failures may alert again on subsequent days unless persisted/deduplicated.
+    if failed_rows:
+        send_email(
+            subject=f"ALERT: {len(failed_rows)} failed Synapse pipeline run(s) - {repo}",
+            body="\n".join(summary),
+            attachment_path=csv_path,
+        )
+
+
 # ============================================================
 # MAIN
 # ============================================================
 
 def main():
+    global CSV_FILE
+    # Required filename format: RepositoryName-DD-MM-YYYYTHH-MM-SSZ.csv
+    timestamp_utc = datetime.now(timezone.utc).strftime("%d-%m-%YT%H-%M-%SZ")
+    CSV_FILE = f"{REPOSITORY_NAME}-{timestamp_utc}.csv"
+
     print("=" * 80)
     print("SYNAPSE UNATTENDED MONITOR")
     print("=" * 80)
@@ -394,6 +484,7 @@ def main():
 
     print_table(rows)
     create_csv(rows)
+    notify_results(rows, CSV_FILE)
 
     print("\nMonitoring completed successfully.")
 
