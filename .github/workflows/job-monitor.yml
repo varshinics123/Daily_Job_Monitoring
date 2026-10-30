@@ -39,7 +39,7 @@ jobs:
         run: python -m pip install --upgrade pip azure-identity requests
 
       - name: Run Synapse monitoring and email notifications
-        run: python synapse_unattended_monitor.py
+        run: python synapse_Daily_Monitor.py
 
       - name: Upload CSV report
         if: always()
